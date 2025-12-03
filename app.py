@@ -1,10 +1,10 @@
 """
 CEREZA - Plateforme de Précommande
-Version: Senior Production V3
-Modifications:
-- Login: Champ 'Contact' au lieu d'Email
-- UI: Suppression des ballons (Animation)
-- Fix: Correction définitive du bug d'affichage HTML (</div>)
+Version: Senior Production V4 (Persistance & Robustesse)
+Features:
+- Persistance: Le refresh (F5) ne déconnecte plus l'utilisateur.
+- UI: Initiales, Couleurs chaudes/froides, Pas de ballons.
+- Fix: Bug HTML corrigé.
 """
 import streamlit as st
 import pandas as pd
@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import urllib.parse
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(
@@ -39,12 +40,45 @@ class Product:
     description: str = ""
     link: str = ""
 
+# --- 2. GESTION DE SESSION (PERSISTANCE) ---
+
 def init_session():
+    """Initialise la session et gère la reconnexion automatique via URL"""
     if "cart" not in st.session_state: st.session_state.cart = []
     if "user" not in st.session_state: st.session_state.user = None
     if "is_admin" not in st.session_state: st.session_state.is_admin = False
 
-# --- 2. CSS ---
+    # LOGIQUE DE PERSISTANCE (AUTO-LOGIN APRES REFRESH)
+    # Si l'utilisateur n'est pas en session mais qu'il y a une trace dans l'URL
+    if not st.session_state.user:
+        try:
+            # On récupère les paramètres d'URL
+            # Note: Compatible Streamlit récent. Si erreur, voir version.
+            query_params = st.query_params
+            if "uid" in query_params:
+                # Format décodé: NOM|CONTACT
+                decoded_uid = urllib.parse.unquote(query_params["uid"])
+                parts = decoded_uid.split("|")
+                if len(parts) == 2:
+                    st.session_state.user = {"name": parts[0], "contact": parts[1]}
+        except Exception:
+            pass # Si l'URL est corrompue, on ne fait rien (reste déconnecté)
+
+def persist_login(name, contact):
+    """Sauvegarde l'utilisateur dans l'URL"""
+    # On crée une chaine simple "NOM|CONTACT"
+    combined = f"{name}|{contact}"
+    encoded = urllib.parse.quote(combined)
+    st.query_params["uid"] = encoded
+
+def clear_login():
+    """Nettoie la session et l'URL"""
+    st.session_state.user = None
+    st.session_state.is_admin = False
+    st.session_state.cart = []
+    st.query_params.clear()
+
+# --- 3. CSS ---
 def inject_css():
     st.markdown("""
     <style>
@@ -82,7 +116,7 @@ def inject_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. FONCTIONS DATA ---
+# --- 4. FONCTIONS DATA ---
 
 def add_to_cart_callback():
     name = st.session_state.get("input_name", "")
@@ -97,13 +131,9 @@ def clear_cart_callback():
     st.session_state.cart = []
 
 def get_initials(fullname):
-    """Extrait les initiales proprement"""
     if not fullname: return "C"
     parts = fullname.strip().split()
-    # Si 2 noms ou plus (ex: Ange Madou -> AM)
-    if len(parts) >= 2:
-        return f"{parts[0][0]}{parts[1][0]}".upper()
-    # Si 1 seul nom (ex: Ange -> AN)
+    if len(parts) >= 2: return f"{parts[0][0]}{parts[1][0]}".upper()
     return fullname[:2].upper()
 
 def log_client_access(name, contact):
@@ -151,7 +181,7 @@ def send_email_notification(user, cart):
         return True
     except: return False
 
-# --- 4. INTERFACE ADMIN ---
+# --- 5. INTERFACE ADMIN ---
 
 def admin_dashboard():
     st.markdown("## 🦅 Dashboard Superviseur")
@@ -172,7 +202,7 @@ def admin_dashboard():
             df_clients = pd.read_csv(FILE_CLIENTS, sep=';', encoding='utf-8-sig')
             st.dataframe(df_clients, use_container_width=True)
 
-# --- 5. INTERFACE CLIENT ---
+# --- 6. INTERFACE CLIENT ---
 
 def login_screen():
     st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -181,12 +211,13 @@ def login_screen():
         st.markdown("<h1 style='text-align:center; color:#0f172a;'>CEREZA</h1>", unsafe_allow_html=True)
         with st.form("login"):
             name = st.text_input("Nom complet")
-            # MODIFICATION ICI : Label Contact
             contact = st.text_input("Contact (Tél / Email)")
             if st.form_submit_button("Entrer", type="primary", use_container_width=True):
                 if name and contact:
                     log_client_access(name, contact)
+                    # MISE A JOUR SESSION ET URL
                     st.session_state.user = {"name": name, "contact": contact}
+                    persist_login(name, contact)
                     st.rerun()
 
 def app_interface():
@@ -219,8 +250,9 @@ def app_interface():
                 st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
+        # Déconnexion propre qui vide l'URL
         if st.button("Déconnexion"):
-            st.session_state.user = None; st.session_state.is_admin = False
+            clear_login()
             st.rerun()
 
     if st.session_state.is_admin:
@@ -253,8 +285,6 @@ def app_interface():
             st.info("Vide.")
         else:
             for item in st.session_state.cart:
-                # MODIFICATION IMPORTANTE : 
-                # On colle le HTML contre la marge de gauche pour éviter le bug </div>
                 html_card = f"""
 <div class="order-card">
     <div style="font-weight:700; color:#0f172a; font-size:1.05rem;">{item.name}</div>
@@ -272,7 +302,6 @@ def app_interface():
                     ok, err = save_order_excel(st.session_state.user, st.session_state.cart)
                     if ok:
                         send_email_notification(st.session_state.user, st.session_state.cart)
-                        # MODIFICATION : PLUS DE BALLOONS
                         st.success("✅ Commande enregistrée avec succès !")
                         st.session_state.cart = []
                     else: st.error(err)
