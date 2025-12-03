@@ -1,10 +1,9 @@
 """
 CEREZA - Plateforme de Précommande
-Version: Senior Production V4 (Persistance & Robustesse)
+Version: Senior Production V5 (Staged Authentication)
 Features:
-- Persistance: Le refresh (F5) ne déconnecte plus l'utilisateur.
-- UI: Initiales, Couleurs chaudes/froides, Pas de ballons.
-- Fix: Bug HTML corrigé.
+- Authentification unifiée: Admin/Client passent par le même formulaire.
+- Logique: Si Nom='ADMIN' & Contact='2002' -> Demande MDP Admin.
 """
 import streamlit as st
 import pandas as pd
@@ -31,7 +30,10 @@ DATA_DIR = Path("data_store")
 DATA_DIR.mkdir(exist_ok=True)
 FILE_CLIENTS = DATA_DIR / "base_clients.csv"
 FILE_COMMANDES = DATA_DIR / "historique_commandes.csv"
+# Mot de passe Admin
 ADMIN_PASSWORD = "cereza_admin" 
+ADMIN_KEY_NAME = "ADMIN"
+ADMIN_KEY_CONTACT = "2002"
 
 @dataclass
 class Product:
@@ -43,31 +45,30 @@ class Product:
 # --- 2. GESTION DE SESSION (PERSISTANCE) ---
 
 def init_session():
-    """Initialise la session et gère la reconnexion automatique via URL"""
-    if "cart" not in st.session_state: st.session_state.cart = []
-    if "user" not in st.session_state: st.session_state.user = None
-    if "is_admin" not in st.session_state: st.session_state.is_admin = False
+    """Initialise la session, gère la persistance et l'étape de connexion."""
+    st.session_state.setdefault("cart", [])
+    st.session_state.setdefault("user", None)
+    st.session_state.setdefault("is_admin", False)
+    st.session_state.setdefault("login_stage", 'input') # Nouvelle variable de l'étape de connexion
 
-    # LOGIQUE DE PERSISTANCE (AUTO-LOGIN APRES REFRESH)
-    # Si l'utilisateur n'est pas en session mais qu'il y a une trace dans l'URL
+    # AUTO-LOGIN via URL (Persistence)
     if not st.session_state.user:
         try:
-            # On récupère les paramètres d'URL
-            # Note: Compatible Streamlit récent. Si erreur, voir version.
             query_params = st.query_params
             if "uid" in query_params:
-                # Format décodé: NOM|CONTACT
                 decoded_uid = urllib.parse.unquote(query_params["uid"])
                 parts = decoded_uid.split("|")
-                if len(parts) == 2:
-                    st.session_state.user = {"name": parts[0], "contact": parts[1]}
+                if len(parts) == 3: # NOM|CONTACT|IS_ADMIN
+                    name, contact, is_admin_str = parts
+                    st.session_state.user = {"name": name, "contact": contact}
+                    st.session_state.is_admin = (is_admin_str == 'True')
+                    st.session_state.login_stage = 'complete' # Authentification réussie
         except Exception:
-            pass # Si l'URL est corrompue, on ne fait rien (reste déconnecté)
+            pass 
 
-def persist_login(name, contact):
-    """Sauvegarde l'utilisateur dans l'URL"""
-    # On crée une chaine simple "NOM|CONTACT"
-    combined = f"{name}|{contact}"
+def persist_login(name, contact, is_admin=False):
+    """Sauvegarde l'utilisateur et son statut d'admin dans l'URL"""
+    combined = f"{name}|{contact}|{is_admin}"
     encoded = urllib.parse.quote(combined)
     st.query_params["uid"] = encoded
 
@@ -76,9 +77,11 @@ def clear_login():
     st.session_state.user = None
     st.session_state.is_admin = False
     st.session_state.cart = []
+    st.session_state.login_stage = 'input'
     st.query_params.clear()
 
-# --- 3. CSS ---
+# --- 3. CSS (Identique au V4) ---
+
 def inject_css():
     st.markdown("""
     <style>
@@ -116,26 +119,20 @@ def inject_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- 4. FONCTIONS DATA ---
+# --- 4. FONCTIONS DATA (Raccourci pour lisibilité) ---
 
 def add_to_cart_callback():
-    name = st.session_state.get("input_name", "")
-    qty = st.session_state.get("input_qty", 1)
-    link = st.session_state.get("input_link", "")
-    desc = st.session_state.get("input_desc", "")
+    name = st.session_state.get("input_name", ""); qty = st.session_state.get("input_qty", 1)
+    link = st.session_state.get("input_link", ""); desc = st.session_state.get("input_desc", "")
     if name:
-        st.session_state.cart.append(Product(name, qty, desc, link))
-        st.toast(f"✅ {name} ajouté !")
-
-def clear_cart_callback():
-    st.session_state.cart = []
-
+        st.session_state.cart.append(Product(name, qty, desc, link)); st.toast(f"✅ {name} ajouté !")
+    else: st.warning("Le nom du produit est obligatoire.")
+def clear_cart_callback(): st.session_state.cart = []
 def get_initials(fullname):
     if not fullname: return "C"
     parts = fullname.strip().split()
     if len(parts) >= 2: return f"{parts[0][0]}{parts[1][0]}".upper()
     return fullname[:2].upper()
-
 def log_client_access(name, contact):
     try:
         exists = FILE_CLIENTS.exists()
@@ -144,51 +141,34 @@ def log_client_access(name, contact):
             if not exists: w.writerow(["Date", "Nom", "Contact"])
             w.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), name.upper(), contact])
     except: pass
-
 def save_order_excel(user, cart):
     try:
-        exists = FILE_COMMANDES.exists()
-        oid = datetime.now().strftime('%Y%m%d-%H%M%S')
+        exists = FILE_COMMANDES.exists(); oid = datetime.now().strftime('%Y%m%d-%H%M%S')
         with open(FILE_COMMANDES, 'a', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f, delimiter=';')
             if not exists: w.writerow(["ID", "Date", "Client", "Contact", "Produit", "Qte", "Desc", "Lien"])
-            for i in cart:
-                w.writerow([oid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user['name'], user['contact'], i.name, i.quantity, i.description, i.link])
+            for i in cart: w.writerow([oid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user['name'], user['contact'], i.name, i.quantity, i.description, i.link])
         return True, ""
-    except PermissionError:
-        return False, "⚠️ Fichier verrouillé par Excel."
-    except Exception as e:
-        return False, str(e)
-
+    except PermissionError: return False, "⚠️ Fichier verrouillé par Excel."
+    except Exception as e: return False, str(e)
 def send_email_notification(user, cart):
     try:
         user_smtp = st.secrets.get("SMTP_USER") or os.getenv("SMTP_USER")
         pwd_smtp = st.secrets.get("SMTP_PASSWORD") or os.getenv("SMTP_PASSWORD")
         if not user_smtp: return False
-        
         msg = MIMEMultipart()
-        msg['Subject'] = f"🍒 Commande Cereza: {user['name']}"
-        msg['From'] = user_smtp
-        msg['To'] = "madouange48@gmail.com"
-        
-        html = "<ul>" + "".join([f"<li>{p.name} (x{p.quantity})</li>" for p in cart]) + "</ul>"
-        msg.attach(MIMEText(html, 'html'))
-        
-        s = smtplib.SMTP('smtp.gmail.com', 587)
-        s.starttls(); s.login(user_smtp, pwd_smtp)
-        s.sendmail(user_smtp, "madouange48@gmail.com", msg.as_string())
-        s.quit()
-        return True
+        msg['Subject'] = f"🍒 Commande Cereza: {user['name']}"; msg['From'] = user_smtp
+        msg['To'] = "madouange48@gmail.com"; html = "<ul>" + "".join([f"<li>{p.name} (x{p.quantity})</li>" for p in cart]) + "</ul>"
+        msg.attach(MIMEText(html, 'html')); s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls(); s.login(user_smtp, pwd_smtp)
+        s.sendmail(user_smtp, "madouange48@gmail.com", msg.as_string()); s.quit(); return True
     except: return False
 
 # --- 5. INTERFACE ADMIN ---
 
 def admin_dashboard():
     st.markdown("## 🦅 Dashboard Superviseur")
-    st.info("Données en temps réel.")
-    
+    st.info("Mode Administrateur. Accès total aux données de commandes.")
     tab1, tab2 = st.tabs(["Commandes", "Clients"])
-    
     with tab1:
         if FILE_COMMANDES.exists():
             df = pd.read_csv(FILE_COMMANDES, sep=';', encoding='utf-8-sig')
@@ -196,29 +176,69 @@ def admin_dashboard():
             with open(FILE_COMMANDES, "rb") as f:
                 st.download_button("📥 Télécharger CSV", f, "cereza_commandes.csv", "text/csv")
         else: st.warning("Vide.")
-            
     with tab2:
         if FILE_CLIENTS.exists():
             df_clients = pd.read_csv(FILE_CLIENTS, sep=';', encoding='utf-8-sig')
             st.dataframe(df_clients, use_container_width=True)
 
-# --- 6. INTERFACE CLIENT ---
+# --- 6. INTERFACE CLIENT (LOGIN MODIFIÉ) ---
 
 def login_screen():
     st.markdown("<br><br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 1.5, 1])
+    
     with c2:
         st.markdown("<h1 style='text-align:center; color:#0f172a;'>CEREZA</h1>", unsafe_allow_html=True)
-        with st.form("login"):
-            name = st.text_input("Nom complet")
-            contact = st.text_input("Contact (Tél / Email)")
-            if st.form_submit_button("Entrer", type="primary", use_container_width=True):
-                if name and contact:
-                    log_client_access(name, contact)
-                    # MISE A JOUR SESSION ET URL
-                    st.session_state.user = {"name": name, "contact": contact}
-                    persist_login(name, contact)
-                    st.rerun()
+
+        # --- Étape 2: Mot de passe Admin ---
+        if st.session_state.login_stage == 'password':
+            st.warning("Accès Administrateur détecté. Veuillez entrer le mot de passe.")
+            with st.form("admin_pwd_form"):
+                admin_pwd = st.text_input("Mot de passe ADMIN", type="password")
+                submitted = st.form_submit_button("Valider l'accès", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if admin_pwd == ADMIN_PASSWORD:
+                        # Authentification Admin réussie
+                        name = st.session_state.temp_admin_name
+                        contact = st.session_state.temp_admin_contact
+                        st.session_state.is_admin = True
+                        st.session_state.user = {"name": name, "contact": contact}
+                        persist_login(name, contact, is_admin=True) # Persiste le statut Admin
+                        st.session_state.login_stage = 'complete'
+                        st.rerun()
+                    else:
+                        st.error("Mot de passe incorrect. Recommencez la connexion.")
+                        st.session_state.login_stage = 'input' # Retour à l'étape initiale
+                        st.rerun()
+        
+        # --- Étape 1: Nom et Contact ---
+        else:
+            with st.form("auth_form"):
+                name = st.text_input("Nom complet")
+                contact = st.text_input("Contact (Tél / Email)")
+                submitted = st.form_submit_button("Entrer", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if not name or not contact:
+                        st.toast("Champs requis.")
+                        return
+
+                    # CHECK ADMIN
+                    if name.upper() == ADMIN_KEY_NAME and contact == ADMIN_KEY_CONTACT:
+                        st.session_state.login_stage = 'password'
+                        st.session_state.temp_admin_name = name
+                        st.session_state.temp_admin_contact = contact
+                        st.rerun()
+                    
+                    # CLIENT NORMAL
+                    else:
+                        log_client_access(name, contact)
+                        st.session_state.user = {"name": name, "contact": contact}
+                        persist_login(name, contact) # Pas Admin
+                        st.session_state.login_stage = 'complete'
+                        st.rerun()
+
 
 def app_interface():
     # Sidebar
@@ -231,27 +251,25 @@ def app_interface():
             <div class="profile-avatar">{get_initials(user['name'])}</div>
             <div style="font-weight:600; font-size:1.1em;">{user['name']}</div>
             <div style="font-size:0.85em; opacity:0.8;">{user['contact']}</div>
+            {f'<div style="font-size:0.8em; margin-top:5px; background:#f97316; padding: 4px; border-radius:4px;">ADMIN MODE</div>' if st.session_state.is_admin else ''}
         </div>
         """, unsafe_allow_html=True)
         
         st.divider()
-        st.metric("📦 Panier", f"{len(st.session_state.cart)}")
-        
-        with st.expander("🔐 Admin"):
-            pwd = st.text_input("Password", type="password")
-            if st.button("Go"):
-                if pwd == ADMIN_PASSWORD:
-                    st.session_state.is_admin = True
-                    st.rerun()
 
+        # Si Admin, on affiche l'interface Admin, sinon le magasin.
         if st.session_state.is_admin:
-            if st.button("Quitter Admin"):
-                st.session_state.is_admin = False
+            st.markdown("### 🛠️ Configuration & Données")
+            # Le dashboard complet est rendu en zone principale
+            if st.button("🚪 Retour au Login / Déconnexion"):
+                clear_login()
                 st.rerun()
-
+            return
+        
+        # Interface Client: suite
+        st.metric("📦 Panier", f"{len(st.session_state.cart)} articles")
         st.markdown("<br>", unsafe_allow_html=True)
-        # Déconnexion propre qui vide l'URL
-        if st.button("Déconnexion"):
+        if st.button("Déconnexion", use_container_width=True):
             clear_login()
             st.rerun()
 
