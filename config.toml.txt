@@ -1,0 +1,10 @@
+[theme]
+# Force le thème clair (Bloque le mode sombre des clients)
+base = "light"
+
+# Tes couleurs CEREZA
+primaryColor = "#f97316"           # Ton Orange Corail
+backgroundColor = "#fff7ed"        # Ton fond Crème léger (--warm-light)
+secondaryBackgroundColor = "#ffffff" # Le fond de la sidebar (Blanc)
+textColor = "#0f172a"              # Ton Navy Profond pour le texte
+font = "sans serif"
