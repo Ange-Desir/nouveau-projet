@@ -1,9 +1,7 @@
 """
 CEREZA - Plateforme de Précommande
-Version: Senior Production V5 (Staged Authentication)
-Features:
-- Authentification unifiée: Admin/Client passent par le même formulaire.
-- Logique: Si Nom='ADMIN' & Contact='2002' -> Demande MDP Admin.
+Version: Senior Production V7 (Persistance & Stabilité Dashboard)
+Fix: Intégration de la lecture sécurisée des fichiers CSV pour éviter les pages Admin vierges sur Cloud.
 """
 import streamlit as st
 import pandas as pd
@@ -16,6 +14,7 @@ from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import urllib.parse
+from pandas.errors import EmptyDataError # Nécessaire pour gérer les fichiers vides
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(
@@ -30,7 +29,8 @@ DATA_DIR = Path("data_store")
 DATA_DIR.mkdir(exist_ok=True)
 FILE_CLIENTS = DATA_DIR / "base_clients.csv"
 FILE_COMMANDES = DATA_DIR / "historique_commandes.csv"
-# Mot de passe Admin
+
+# CLÉS DE SÉCURITÉ
 ADMIN_PASSWORD = "cereza_admin" 
 ADMIN_KEY_NAME = "ADMIN"
 ADMIN_KEY_CONTACT = "2002"
@@ -49,7 +49,7 @@ def init_session():
     st.session_state.setdefault("cart", [])
     st.session_state.setdefault("user", None)
     st.session_state.setdefault("is_admin", False)
-    st.session_state.setdefault("login_stage", 'input') # Nouvelle variable de l'étape de connexion
+    st.session_state.setdefault("login_stage", 'input')
 
     # AUTO-LOGIN via URL (Persistence)
     if not st.session_state.user:
@@ -58,13 +58,13 @@ def init_session():
             if "uid" in query_params:
                 decoded_uid = urllib.parse.unquote(query_params["uid"])
                 parts = decoded_uid.split("|")
-                if len(parts) == 3: # NOM|CONTACT|IS_ADMIN
+                if len(parts) == 3:
                     name, contact, is_admin_str = parts
                     st.session_state.user = {"name": name, "contact": contact}
                     st.session_state.is_admin = (is_admin_str == 'True')
-                    st.session_state.login_stage = 'complete' # Authentification réussie
+                    st.session_state.login_stage = 'complete'
         except Exception:
-            pass 
+            pass
 
 def persist_login(name, contact, is_admin=False):
     """Sauvegarde l'utilisateur et son statut d'admin dans l'URL"""
@@ -80,7 +80,7 @@ def clear_login():
     st.session_state.login_stage = 'input'
     st.query_params.clear()
 
-# --- 3. CSS (Identique au V4) ---
+# --- 3. CSS (Identique) ---
 
 def inject_css():
     st.markdown("""
@@ -119,7 +119,7 @@ def inject_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- 4. FONCTIONS DATA (Raccourci pour lisibilité) ---
+# --- 4. FONCTIONS DATA ---
 
 def add_to_cart_callback():
     name = st.session_state.get("input_name", ""); qty = st.session_state.get("input_qty", 1)
@@ -158,30 +158,74 @@ def send_email_notification(user, cart):
         if not user_smtp: return False
         msg = MIMEMultipart()
         msg['Subject'] = f"🍒 Commande Cereza: {user['name']}"; msg['From'] = user_smtp
-        msg['To'] = "madouange48@gmail.com"; html = "<ul>" + "".join([f"<li>{p.name} (x{p.quantity})</li>" for p in cart]) + "</ul>"
+        msg['To'] = "madouange48@gmail.com"
+        html = "<ul>" + "".join([f"<li>{p.name} (x{p.quantity})</li>" for p in cart]) + "</ul>"
         msg.attach(MIMEText(html, 'html')); s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls(); s.login(user_smtp, pwd_smtp)
         s.sendmail(user_smtp, "madouange48@gmail.com", msg.as_string()); s.quit(); return True
     except: return False
 
-# --- 5. INTERFACE ADMIN ---
+
+# --- 5. INTERFACE ADMIN (VERSION SÉCURISÉE) ---
+
+def load_data_safe(file_path: Path) -> pd.DataFrame:
+    """Tente de charger les données CSV. Retourne un DataFrame vide avec colonnes si échec."""
+    # Définition des colonnes par défaut pour éviter un plantage si le fichier n'existe pas
+    if file_path == FILE_COMMANDES:
+        cols = ["ID", "Date", "Client", "Contact", "Produit", "Qte", "Desc", "Lien"]
+    elif file_path == FILE_CLIENTS:
+        cols = ["Date", "Nom", "Contact"]
+    else:
+        cols = []
+
+    if not file_path.exists():
+        # Si le fichier n'existe pas (cas typique après redémarrage Cloud)
+        return pd.DataFrame(columns=cols)
+
+    try:
+        # Tente la lecture
+        df = pd.read_csv(file_path, sep=';', encoding='utf-8-sig')
+        # Vérifie si le fichier est vide ou seulement des headers
+        if df.empty:
+             return pd.DataFrame(columns=cols)
+        return df
+    except EmptyDataError:
+        # Fichier vide, retourne un DF avec les headers
+        return pd.DataFrame(columns=cols)
+    except Exception as e:
+        # Autre erreur (corruption, etc.)
+        st.error(f"Erreur de lecture de {file_path.name}: {e}")
+        return pd.DataFrame(columns=cols)
+
 
 def admin_dashboard():
+    """Affiche le Dashboard Admin robuste."""
     st.markdown("## 🦅 Dashboard Superviseur")
     st.info("Mode Administrateur. Accès total aux données de commandes.")
+    
     tab1, tab2 = st.tabs(["Commandes", "Clients"])
+    
     with tab1:
-        if FILE_COMMANDES.exists():
-            df = pd.read_csv(FILE_COMMANDES, sep=';', encoding='utf-8-sig')
-            st.dataframe(df, use_container_width=True)
+        st.markdown("### Historique des Commandes")
+        df_commandes = load_data_safe(FILE_COMMANDES)
+        
+        if df_commandes.empty:
+            st.warning("Historique de commandes vide. Passez une commande test pour créer le fichier.")
+        else:
+            st.dataframe(df_commandes, use_container_width=True)
+            # Le fichier DOIT exister ici car on l'a sauvegardé
             with open(FILE_COMMANDES, "rb") as f:
                 st.download_button("📥 Télécharger CSV", f, "cereza_commandes.csv", "text/csv")
-        else: st.warning("Vide.")
+            
     with tab2:
-        if FILE_CLIENTS.exists():
-            df_clients = pd.read_csv(FILE_CLIENTS, sep=';', encoding='utf-8-sig')
+        st.markdown("### Liste des Clients Enregistrés")
+        df_clients = load_data_safe(FILE_CLIENTS)
+
+        if df_clients.empty:
+            st.warning("Base clients vide. Connectez-vous en tant que client normal pour enregistrer les données.")
+        else:
             st.dataframe(df_clients, use_container_width=True)
 
-# --- 6. INTERFACE CLIENT (LOGIN MODIFIÉ) ---
+# --- 6. INTERFACE CLIENT ---
 
 def login_screen():
     st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -199,17 +243,16 @@ def login_screen():
                 
                 if submitted:
                     if admin_pwd == ADMIN_PASSWORD:
-                        # Authentification Admin réussie
                         name = st.session_state.temp_admin_name
                         contact = st.session_state.temp_admin_contact
                         st.session_state.is_admin = True
                         st.session_state.user = {"name": name, "contact": contact}
-                        persist_login(name, contact, is_admin=True) # Persiste le statut Admin
+                        persist_login(name, contact, is_admin=True)
                         st.session_state.login_stage = 'complete'
                         st.rerun()
                     else:
                         st.error("Mot de passe incorrect. Recommencez la connexion.")
-                        st.session_state.login_stage = 'input' # Retour à l'étape initiale
+                        st.session_state.login_stage = 'input'
                         st.rerun()
         
         # --- Étape 1: Nom et Contact ---
@@ -235,7 +278,7 @@ def login_screen():
                     else:
                         log_client_access(name, contact)
                         st.session_state.user = {"name": name, "contact": contact}
-                        persist_login(name, contact) # Pas Admin
+                        persist_login(name, contact)
                         st.session_state.login_stage = 'complete'
                         st.rerun()
 
@@ -257,10 +300,8 @@ def app_interface():
         
         st.divider()
 
-        # Si Admin, on affiche l'interface Admin, sinon le magasin.
         if st.session_state.is_admin:
-            st.markdown("### 🛠️ Configuration & Données")
-            # Le dashboard complet est rendu en zone principale
+            st.markdown("### 🛠️ Gestion")
             if st.button("🚪 Retour au Login / Déconnexion"):
                 clear_login()
                 st.rerun()
