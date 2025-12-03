@@ -1,0 +1,26 @@
+Configuration Email pour les notifications
+
+Email du transitaire configuré : madouange48@gmail.com
+
+Pour que l'envoi fonctionne, vous devez configurer les identifiants SMTP :
+
+Option 1 : Variables d'environnement (Recommandé)
+Créez un fichier .env à la racine avec :
+TRANSITAIRE_EMAIL=madouange48@gmail.com
+SMTP_USER=madouange48@gmail.com
+SMTP_PASSWORD=votre-mot-de-passe-application
+
+Option 2 : Modifier directement dans app.py
+Cherchez la fonction send_email_notification et modifiez les valeurs par défaut.
+
+POUR GMAIL :
+1. Allez sur https://myaccount.google.com/security
+2. Activez la "Validation en deux étapes" (si pas déjà fait)
+3. Allez dans "Mots de passe des applications"
+4. Créez un nouveau mot de passe d'application pour "Mail"
+5. Utilisez ce mot de passe (16 caractères) dans SMTP_PASSWORD
+
+L'application utilisera automatiquement :
+- Serveur SMTP : smtp.gmail.com
+- Port : 587
+

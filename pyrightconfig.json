@@ -1,0 +1,15 @@
+{
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": false,
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules"
+  ],
+  "ignore": [
+    "commandes"
+  ],
+  "stubPath": "",
+  "venvPath": ".",
+  "venv": "."
+}
+

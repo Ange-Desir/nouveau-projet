@@ -1,0 +1,9 @@
+[tool.pyright]
+reportMissingImports = "warning"
+reportMissingModuleSource = false
+exclude = [
+    "**/__pycache__",
+    "**/node_modules",
+    "commandes/**"
+]
+
